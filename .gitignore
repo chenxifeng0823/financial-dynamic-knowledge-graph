@@ -40,7 +40,9 @@ ENV/
 # Data files
 data/raw/*
 data/processed/*
+data/FinDKG_repo/
 !data/.gitkeep
+!data/DATASET_SUMMARY.md
 *.csv
 *.tsv
 *.json

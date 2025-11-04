@@ -49,7 +49,7 @@ Get started quickly with our [Quick Start Guide](QUICKSTART.md)!
 
 ```bash
 # Clone the repository
-git clone https://github.com/chenxifeng-web/financial-dynamic-knowledge-graph.git
+git clone https://github.com/chenxifeng0823/financial-dynamic-knowledge-graph.git
 cd financial-dynamic-knowledge-graph
 
 # Download the dataset

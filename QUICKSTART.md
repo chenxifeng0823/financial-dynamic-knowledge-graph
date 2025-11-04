@@ -15,7 +15,7 @@ python --version
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/chenxifeng-web/financial-dynamic-knowledge-graph.git
+git clone https://github.com/chenxifeng0823/financial-dynamic-knowledge-graph.git
 cd financial-dynamic-knowledge-graph
 ```
 
@@ -147,7 +147,7 @@ python src/data_processing/explore_dataset.py
 
 - Original FinDKG Repository: https://github.com/xiaohui-victor-li/FinDKG
 - FinDKG Website: https://xiaohui-victor-li.github.io/FinDKG/
-- Project Repository: https://github.com/chenxifeng-web/financial-dynamic-knowledge-graph
+- Project Repository: https://github.com/chenxifeng0823/financial-dynamic-knowledge-graph
 
 ## Contributing
 

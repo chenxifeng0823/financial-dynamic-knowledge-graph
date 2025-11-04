@@ -34,13 +34,15 @@ This project is inspired by the FinDKG work (see [original repository](https://g
 - **FinDKG Dataset**: A financial temporal knowledge graph dataset
 - **KGTransformer**: A model for temporal knowledge graph learning
 
-## Setup
+## Quick Start
+
+Get started quickly with our [Quick Start Guide](QUICKSTART.md)!
 
 ### Prerequisites
 
 - Python 3.8+
-- PyTorch 1.8+
-- DGL (Deep Graph Library) 0.8+
+- PyTorch 1.8+ (for model training, optional for data exploration)
+- DGL (Deep Graph Library) 0.8+ (for model training, optional for data exploration)
 - CUDA 11.0+ (optional, for GPU acceleration)
 
 ### Installation
@@ -50,13 +52,28 @@ This project is inspired by the FinDKG work (see [original repository](https://g
 git clone https://github.com/chenxifeng-web/financial-dynamic-knowledge-graph.git
 cd financial-dynamic-knowledge-graph
 
-# Install dependencies
-pip install -r requirements.txt
+# Download the dataset
+python src/data_processing/load_dataset.py
+
+# Explore the dataset
+python src/data_processing/explore_dataset.py
+
+# Visualize the dataset
+python src/data_processing/visualize_dataset.py
 ```
 
 ## Dataset
 
-The project will work with the FinDKG dataset, which contains financial entities and their temporal relationships. The dataset will be downloaded and prepared in the `data/` directory.
+The project works with the **FinDKG dataset**, which contains financial entities and their temporal relationships:
+
+- **13,645 entities** (companies, people, countries, financial instruments, etc.)
+- **15 relation types** (Control, Impact, Operate_In, Invests_In, etc.)
+- **144,062 temporal triplets** spanning 126 time steps
+- Entity types include: PERSON, COMPANY, GPE (countries), CONCEPT, EVENT, SECTOR, etc.
+
+Key entities include Donald Trump, United States, U.S. Federal Reserve, China, and major corporations.
+
+See [DATASET_SUMMARY.md](data/DATASET_SUMMARY.md) for detailed statistics.
 
 ## Status
 

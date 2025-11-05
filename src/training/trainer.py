@@ -104,6 +104,34 @@ class KGTrainer:
         
         return total_loss / len(self.valid_loader)
     
+    def evaluate_metrics(self, eval_loader, num_entities):
+        """
+        Evaluate model with MRR and Hits@K metrics.
+        
+        Args:
+            eval_loader: DataLoader for evaluation
+            num_entities: Total number of entities
+            
+        Returns:
+            Dictionary with metrics
+        """
+        from ..evaluation import evaluate_model
+        
+        # Get all triplets from dataloader
+        eval_triplets = eval_loader.dataset.triplets
+        
+        # Evaluate
+        metrics = evaluate_model(
+            model=self.model,
+            test_data=eval_triplets,
+            num_entities=num_entities,
+            batch_size=100,
+            filtered=False,  # Can be made configurable
+            all_triplets=None
+        )
+        
+        return metrics
+    
     def train(self, num_epochs, save_every=10):
         """
         Train the model for multiple epochs.

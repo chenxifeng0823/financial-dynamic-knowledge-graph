@@ -1,0 +1,48 @@
+name: findkg
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  # Python
+  - python=3.10
+  
+  # PyTorch with CUDA
+  - pytorch>=2.0.0
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  
+  # Data Processing
+  - numpy>=1.19.0
+  - pandas>=1.2.0
+  - scipy>=1.6.0
+  - networkx>=2.5
+  
+  # Visualization
+  - matplotlib>=3.3.0
+  - seaborn>=0.11.0
+  
+  # Utilities
+  - tqdm>=4.60.0
+  - pyyaml>=5.4.0
+  
+  # Jupyter
+  - jupyter>=1.0.0
+  - ipykernel>=5.5.0
+  
+  # Testing
+  - pytest>=7.0.0
+  - pytest-cov>=3.0.0
+  
+  # ML tools
+  - scikit-learn>=0.24.0
+  - tensorboard>=2.8.0
+  
+  # pip packages (not available in conda or need specific versions)
+  - pip
+  - pip:
+    - dgl -f https://data.dgl.ai/wheels/cu121/repo.html
+    - wandb>=0.12.0
+

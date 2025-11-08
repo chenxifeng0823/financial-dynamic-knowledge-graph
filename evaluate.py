@@ -56,39 +56,61 @@ def parse_args():
 
 def load_model(args, num_entities, num_relations, num_timestamps=None):
     """Load model from checkpoint."""
+    
+    # Load checkpoint first to get saved config
+    checkpoint = torch.load(args.checkpoint, map_location='cpu')
+    
+    # If checkpoint has config, use it (preferred)
+    if isinstance(checkpoint, dict) and 'model_config' in checkpoint:
+        config = checkpoint['model_config']
+        num_entities = config.get('num_entities', num_entities)
+        num_relations = config.get('num_relations', num_relations)
+        embedding_dim = config.get('embedding_dim', args.embedding_dim)
+        num_timestamps_saved = config.get('num_timestamps', num_timestamps)
+        
+        print(f"Using config from checkpoint:")
+        print(f"  Entities: {num_entities}")
+        print(f"  Relations: {num_relations}")
+        print(f"  Embedding dim: {embedding_dim}")
+        if num_timestamps_saved:
+            print(f"  Timestamps: {num_timestamps_saved}")
+    else:
+        embedding_dim = args.embedding_dim
+        num_timestamps_saved = num_timestamps
+    
+    # Create model with correct config
     if args.model == 'transe':
         model = TransE(
             num_entities=num_entities,
             num_relations=num_relations,
-            embedding_dim=args.embedding_dim
+            embedding_dim=embedding_dim
         )
     elif args.model == 'temporal_transe':
-        if num_timestamps is None:
+        if num_timestamps_saved is None:
             raise ValueError("num_timestamps required for temporal models")
         model = TemporalTransE(
             num_entities=num_entities,
             num_relations=num_relations,
-            num_timestamps=num_timestamps,
-            embedding_dim=args.embedding_dim,
-            time_dim=args.embedding_dim // 2
+            num_timestamps=num_timestamps_saved,
+            embedding_dim=embedding_dim,
+            time_dim=embedding_dim // 2
         )
     elif args.model == 'distmult':
         model = DistMult(
             num_entities=num_entities,
             num_relations=num_relations,
-            embedding_dim=args.embedding_dim
+            embedding_dim=embedding_dim
         )
     elif args.model == 'complex':
         model = ComplEx(
             num_entities=num_entities,
             num_relations=num_relations,
-            embedding_dim=args.embedding_dim
+            embedding_dim=embedding_dim
         )
     else:
         raise ValueError(f"Unknown model: {args.model}")
     
-    # Load checkpoint
-    checkpoint = torch.load(args.checkpoint, map_location='cpu')
+    # Load weights
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
     else:

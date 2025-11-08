@@ -169,13 +169,26 @@ class KGTrainer:
         print("Training completed!")
     
     def save_checkpoint(self, filename):
-        """Save model checkpoint."""
+        """Save model checkpoint with configuration."""
         checkpoint_path = self.checkpoint_dir / filename
-        torch.save({
+        
+        # Save model state and configuration
+        checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'history': self.history
-        }, checkpoint_path)
+            'history': self.history,
+            'model_config': {
+                'num_entities': self.model.num_entities,
+                'num_relations': self.model.num_relations,
+                'embedding_dim': self.model.embedding_dim,
+            }
+        }
+        
+        # Add num_timestamps for temporal models
+        if hasattr(self.model, 'num_timestamps'):
+            checkpoint['model_config']['num_timestamps'] = self.model.num_timestamps
+        
+        torch.save(checkpoint, checkpoint_path)
     
     def load_checkpoint(self, filename):
         """Load model checkpoint."""

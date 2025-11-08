@@ -210,7 +210,8 @@ def create_dataloader(
     batch_size: int = 512,
     num_workers: int = 0,
     shuffle: bool = True,
-    temporal_batching: bool = False
+    temporal_batching: bool = False,
+    num_negatives: int = 5
 ):
     """
     Create a DataLoader for temporal knowledge graph data.
@@ -222,11 +223,12 @@ def create_dataloader(
         num_workers: Number of worker processes for data loading
         shuffle: Whether to shuffle data
         temporal_batching: Whether to group batches by timestamp
+        num_negatives: Number of negative samples per positive triplet
         
     Returns:
         torch.utils.data.DataLoader instance
     """
-    dataset = TemporalKGDataset(data_path, split=split)
+    dataset = TemporalKGDataset(data_path, split=split, num_negatives=num_negatives)
     
     if temporal_batching:
         batch_sampler = TemporalKGBatchSampler(dataset, batch_size, shuffle=shuffle)

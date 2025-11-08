@@ -15,6 +15,7 @@ from src.data_processing.dataset import create_dataloader
 from src.models.transe import TransE
 from src.models.distmult import DistMult
 from src.models.complex import ComplEx
+from src.models.temporal_transe import TemporalTransE
 from src.training import KGTrainer
 
 
@@ -29,7 +30,7 @@ def parse_args():
     
     # Model
     parser.add_argument('--model', type=str, default='transe',
-                        choices=['transe', 'distmult', 'complex'],
+                        choices=['transe', 'distmult', 'complex', 'temporal_transe'],
                         help='Model to train')
     parser.add_argument('--embedding_dim', type=int, default=100,
                         help='Embedding dimension')
@@ -67,13 +68,25 @@ def parse_args():
     return parser.parse_args()
 
 
-def create_model(args, num_entities, num_relations):
+def create_model(args, num_entities, num_relations, num_timestamps=None):
     """Create model based on arguments."""
     if args.model == 'transe':
         model = TransE(
             num_entities=num_entities,
             num_relations=num_relations,
             embedding_dim=args.embedding_dim,
+            margin=args.margin,
+            p_norm=args.p_norm
+        )
+    elif args.model == 'temporal_transe':
+        if num_timestamps is None:
+            raise ValueError("num_timestamps required for temporal models")
+        model = TemporalTransE(
+            num_entities=num_entities,
+            num_relations=num_relations,
+            num_timestamps=num_timestamps,
+            embedding_dim=args.embedding_dim,
+            time_dim=args.embedding_dim // 2,  # Half size for time embeddings
             margin=args.margin,
             p_norm=args.p_norm
         )
@@ -112,6 +125,7 @@ def main():
     print(f"Embedding dim: {args.embedding_dim}")
     print(f"Batch size: {args.batch_size}")
     print(f"Learning rate: {args.lr}")
+    print(f"Negative samples: {args.num_negatives}")
     print(f"Epochs: {args.epochs}")
     print("=" * 70)
     
@@ -122,7 +136,8 @@ def main():
         split='train',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        shuffle=True
+        shuffle=True,
+        num_negatives=args.num_negatives
     )
     
     valid_loader = create_dataloader(
@@ -130,7 +145,8 @@ def main():
         split='valid',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        shuffle=False
+        shuffle=False,
+        num_negatives=args.num_negatives
     )
     
     # Get dataset info
@@ -138,14 +154,18 @@ def main():
     num_entities = dataset.num_entities
     num_relations = dataset.num_relations
     
+    # Get number of unique timestamps for temporal models
+    num_timestamps = int(dataset.triplets[:, 3].max()) + 1
+    
     print(f"Entities: {num_entities:,}")
     print(f"Relations: {num_relations}")
+    print(f"Timestamps: {num_timestamps}")
     print(f"Training triplets: {len(dataset):,}")
     print(f"Training batches: {len(train_loader)}")
     
     # Create model
     print(f"\nInitializing {args.model.upper()} model...")
-    model = create_model(args, num_entities, num_relations)
+    model = create_model(args, num_entities, num_relations, num_timestamps)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Optimizer

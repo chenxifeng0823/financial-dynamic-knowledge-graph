@@ -15,6 +15,7 @@ from src.data_processing.dataset import TemporalKGDataset
 from src.models.transe import TransE
 from src.models.distmult import DistMult
 from src.models.complex import ComplEx
+from src.models.temporal_transe import TemporalTransE
 from src.evaluation import evaluate_model
 
 
@@ -32,7 +33,7 @@ def parse_args():
     
     # Model
     parser.add_argument('--model', type=str, required=True,
-                        choices=['transe', 'distmult', 'complex'],
+                        choices=['transe', 'distmult', 'complex', 'temporal_transe'],
                         help='Model to evaluate')
     parser.add_argument('--checkpoint', type=str, required=True,
                         help='Path to model checkpoint')
@@ -53,13 +54,23 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(args, num_entities, num_relations):
+def load_model(args, num_entities, num_relations, num_timestamps=None):
     """Load model from checkpoint."""
     if args.model == 'transe':
         model = TransE(
             num_entities=num_entities,
             num_relations=num_relations,
             embedding_dim=args.embedding_dim
+        )
+    elif args.model == 'temporal_transe':
+        if num_timestamps is None:
+            raise ValueError("num_timestamps required for temporal models")
+        model = TemporalTransE(
+            num_entities=num_entities,
+            num_relations=num_relations,
+            num_timestamps=num_timestamps,
+            embedding_dim=args.embedding_dim,
+            time_dim=args.embedding_dim // 2
         )
     elif args.model == 'distmult':
         model = DistMult(
@@ -111,13 +122,17 @@ def main():
     num_entities = dataset.num_entities
     num_relations = dataset.num_relations
     
+    # Get num_timestamps for temporal models
+    num_timestamps = int(dataset.triplets[:, 3].max()) + 1
+    
     print(f"Entities: {num_entities:,}")
     print(f"Relations: {num_relations}")
+    print(f"Timestamps: {num_timestamps}")
     print(f"Test triplets: {len(dataset):,}")
     
     # Load model
     print(f"\nLoading model from {args.checkpoint}...")
-    model = load_model(args, num_entities, num_relations)
+    model = load_model(args, num_entities, num_relations, num_timestamps)
     model = model.to(device)
     model.eval()
     

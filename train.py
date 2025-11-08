@@ -155,11 +155,14 @@ def main():
     num_relations = dataset.num_relations
     
     # Get number of unique timestamps for temporal models
-    num_timestamps = int(dataset.triplets[:, 3].max()) + 1
+    # IMPORTANT: Must check ALL splits (train/valid/test) to get the full range
+    train_max_time = int(train_loader.dataset.triplets[:, 3].max())
+    valid_max_time = int(valid_loader.dataset.triplets[:, 3].max())
+    num_timestamps = max(train_max_time, valid_max_time) + 1
     
     print(f"Entities: {num_entities:,}")
     print(f"Relations: {num_relations}")
-    print(f"Timestamps: {num_timestamps}")
+    print(f"Timestamps: {num_timestamps} (train max: {train_max_time}, valid max: {valid_max_time})")
     print(f"Training triplets: {len(dataset):,}")
     print(f"Training batches: {len(train_loader)}")
     

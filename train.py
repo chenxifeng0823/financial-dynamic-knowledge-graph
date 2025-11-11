@@ -155,14 +155,19 @@ def main():
     num_relations = dataset.num_relations
     
     # Get number of unique timestamps for temporal models
-    # IMPORTANT: Must check ALL splits (train/valid/test) to get the full range
+    # IMPORTANT: For temporal models, we need to know the FULL time range
+    # including test set, even though we don't train on it
+    # This allows model to handle future timestamps during evaluation
+    from src.data_processing.dataset import TemporalKGDataset
+    test_dataset = TemporalKGDataset(args.data_path, split='test')
     train_max_time = int(train_loader.dataset.triplets[:, 3].max())
     valid_max_time = int(valid_loader.dataset.triplets[:, 3].max())
-    num_timestamps = max(train_max_time, valid_max_time) + 1
+    test_max_time = int(test_dataset.triplets[:, 3].max())
+    num_timestamps = max(train_max_time, valid_max_time, test_max_time) + 1
     
     print(f"Entities: {num_entities:,}")
     print(f"Relations: {num_relations}")
-    print(f"Timestamps: {num_timestamps} (train max: {train_max_time}, valid max: {valid_max_time})")
+    print(f"Timestamps: {num_timestamps} (train: 0-{train_max_time}, valid: {int(valid_loader.dataset.triplets[:, 3].min())}-{valid_max_time}, test: {int(test_dataset.triplets[:, 3].min())}-{test_max_time})")
     print(f"Training triplets: {len(dataset):,}")
     print(f"Training batches: {len(train_loader)}")
     

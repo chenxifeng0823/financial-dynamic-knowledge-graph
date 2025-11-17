@@ -65,7 +65,7 @@ def train_epoch(model, train_loader, optimizer, epoch, device):
 
 @torch.no_grad()
 def evaluate(model, loader, device):
-    """Evaluate model"""
+    """Evaluate model (loss only)"""
     model.eval()
     total_loss = 0
     num_batches = 0
@@ -92,6 +92,81 @@ def evaluate(model, loader, device):
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
     return avg_loss
+
+
+@torch.no_grad()
+def evaluate_with_rankings(model, loader, device, num_entities):
+    """
+    Evaluate model with ranking metrics (MRR, Recall@K).
+    
+    This implements the temporal sequential evaluation protocol:
+    1. Process batches in temporal order
+    2. For each batch, score all possible tail entities
+    3. Compute rank of true tail entity
+    4. Update dynamic embeddings for next batch
+    """
+    from src.evaluation.temporal_metrics import compute_ranking_metrics
+    
+    model.eval()
+    all_ranks = []
+    total_loss = 0
+    num_batches = 0
+    
+    # Initialize cumulative graph builder
+    entity_types = loader.dataset.entity_types
+    cumul_builder = CumulativeGraphBuilder(
+        loader.dataset.num_entities,
+        loader.dataset.num_relations,
+        entity_types
+    )
+    
+    from tqdm import tqdm
+    batch_tqdm = tqdm(loader, desc="Evaluating")
+    
+    for batch_data in batch_tqdm:
+        # Forward pass
+        log_prob, tail_pred = model(batch_data)  # tail_pred: [num_edges, num_entities]
+        
+        # Loss
+        loss = -log_prob
+        total_loss += loss.item()
+        num_batches += 1
+        
+        # Compute ranks for this batch
+        edge_index = batch_data.edge_index
+        true_tails = edge_index[1]  # True tail entities
+        
+        # For each edge in the batch
+        for i in range(tail_pred.size(0)):
+            scores = tail_pred[i]  # Scores for all entities
+            true_tail = true_tails[i].item()
+            true_score = scores[true_tail]
+            
+            # Compute rank using optimistic ranking
+            # rank = (# entities with higher score) + (# entities with equal score - 1) / 2 + 1
+            num_higher = (scores > true_score).sum().item()
+            num_equal = (scores == true_score).sum().item()
+            rank = num_higher + (num_equal - 1.0) / 2.0 + 1.0
+            
+            all_ranks.append(rank)
+        
+        # Update progress bar
+        if len(all_ranks) > 0:
+            current_mrr = sum(1.0 / r for r in all_ranks) / len(all_ranks)
+            batch_tqdm.set_postfix({
+                'MRR': f'{current_mrr:.4f}',
+                'Ranks': len(all_ranks)
+            })
+        
+        # Add batch to cumulative graph (for next iteration)
+        cumul_data = cumul_builder.add_batch(batch_data)
+    
+    # Compute metrics
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0
+    metrics = compute_ranking_metrics(all_ranks, k_values=[1, 3, 10, 100])
+    metrics['loss'] = avg_loss
+    
+    return metrics, all_ranks
 
 
 def main(args):
@@ -131,6 +206,19 @@ def main(args):
     config.device = args.device
     config.epochs = args.epochs
     config.lr = args.lr
+    
+    # Handle early stopping arguments
+    if args.no_early_stop:
+        config.early_stop = False
+    if args.patience is not None:
+        config.patience = args.patience
+    
+    print(f"\nTraining configuration:")
+    print(f"  Epochs: {config.epochs}")
+    print(f"  Learning rate: {config.lr}")
+    print(f"  Early stopping: {'Enabled' if config.early_stop else 'Disabled'}")
+    if config.early_stop:
+        print(f"  Patience: {config.patience}")
     
     # Initialize model
     print(f"\nInitializing KGTransformer...")
@@ -192,10 +280,47 @@ def main(args):
                 print(f"\nEarly stopping at epoch {epoch}")
                 break
     
-    # Test
+    # Test with comprehensive evaluation
     print(f"\nEvaluating on test set...")
-    test_loss = evaluate(model, test_loader, args.device)
-    print(f'Test Loss: {test_loss:.4f}')
+    if args.eval_rankings:
+        print("Computing ranking metrics (MRR, Recall@K)...")
+        test_metrics, test_ranks = evaluate_with_rankings(
+            model, test_loader, args.device, num_entities
+        )
+        
+        # Print results
+        from src.evaluation.temporal_metrics import print_ranking_metrics, save_results_to_file
+        print_ranking_metrics(test_metrics, phase="TEST")
+        
+        # Save results
+        results_dir = Path('results')
+        results_dir.mkdir(exist_ok=True)
+        
+        results_file = results_dir / f"kgt_pyg_test_results.txt"
+        save_results_to_file(
+            str(results_file),
+            test_metrics,
+            config={
+                'model': 'KGTransformer_PyG',
+                'num_entities': num_entities,
+                'num_relations': num_relations,
+                'embedding_dim': config.static_entity_embed_dim,
+                'num_epochs_trained': epoch + 1,
+                'seed': args.seed
+            }
+        )
+        print(f"\nResults saved to: {results_file}")
+        
+        # Also save in FinDKG format for comparison
+        findkg_file = results_dir / f"kgt_pyg_test_findkg_format.txt"
+        with open(findkg_file, 'w') as f:
+            f.write(f"{args.seed},{test_metrics['REC1']:.6f},{test_metrics['REC3']:.6f},"
+                   f"{test_metrics['REC10']:.6f},{test_metrics['MRR']:.6f}\n")
+        print(f"FinDKG format results saved to: {findkg_file}")
+    else:
+        test_loss = evaluate(model, test_loader, args.device)
+        print(f'Test Loss: {test_loss:.4f}')
+        print("\n(Use --eval_rankings flag to compute MRR and Recall@K metrics)")
     
     print("\nTraining completed!")
 
@@ -216,6 +341,12 @@ if __name__ == '__main__':
                         help='Save the best model')
     parser.add_argument('--save_dir', type=str, default='checkpoints',
                         help='Directory to save models')
+    parser.add_argument('--eval_rankings', action='store_true',
+                        help='Compute ranking metrics (MRR, Recall@K) on test set')
+    parser.add_argument('--no_early_stop', action='store_true',
+                        help='Disable early stopping (train for full epochs)')
+    parser.add_argument('--patience', type=int, default=None,
+                        help='Early stopping patience (overrides config default)')
     
     args = parser.parse_args()
     main(args)

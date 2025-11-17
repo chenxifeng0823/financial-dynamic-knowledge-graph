@@ -146,6 +146,7 @@ class GraphTransformerConv(MessagePassing):
         out = self.drop(self.activation(self.linear_a(out, ntype, presorted)))
         
         # Residual connection with learnable skip parameter
+        # self.skip is nn.Parameter, so it's on the same device as the module
         alpha = torch.sigmoid(self.skip[ntype]).unsqueeze(-1)
         if x.shape != out.shape:
             x_residual = x @ self.residual_w
@@ -192,6 +193,7 @@ class GraphTransformerConv(MessagePassing):
             
             # Compute attention score: (kw * q).sum(-1) * priority / sqrt(d)
             # Shape: (E,)
+            # relation_pri is nn.ParameterList, so it's on the same device as the module
             attn_score = (kw * q_heads[i]).sum(-1) * self.relation_pri[i][etype] / self.sqrt_d
             a_list.append(attn_score)
             

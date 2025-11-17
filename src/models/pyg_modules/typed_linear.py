@@ -80,6 +80,7 @@ class TypedLinear(nn.Module):
         device = x.device
         
         # Gather weights for each type: (N, out_features, in_features)
+        # self.weight and self.bias are nn.Parameters, so they're on the same device as the module
         type_weights = self.weight[types]  # (N, out_features, in_features)
         
         # Perform batched matrix multiplication

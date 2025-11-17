@@ -378,9 +378,73 @@ class Combiner(nn.Module):
         return combined_emb
 
 
+class GraphReadout(nn.Module):
+    """
+    Graph Readout Module - Computes graph-level embeddings
+    
+    Args:
+        combiner: Combiner module
+        readout_op: Readout operation ('max', 'mean', 'sum')
+        readout_node_type: Which embeddings to use ('combined', 'static', 'dynamic')
+    """
+    def __init__(self, combiner, readout_op='max', readout_node_type='combined'):
+        super().__init__()
+        
+        self.combiner = combiner
+        self.readout_node_type = readout_node_type
+        
+        if readout_node_type == "combined":
+            self.node_emb_dim = combiner.combined_emb_dim
+        elif readout_node_type == "static":
+            self.node_emb_dim = combiner.static_emb_dim
+        elif readout_node_type == "dynamic":
+            self.node_emb_dim = combiner.dynamic_emb_dim
+        else:
+            raise ValueError(f"Invalid type: {readout_node_type}")
+        
+        self.readout_op = readout_op
+        if readout_op in ['max', 'min', 'mean', 'sum']:
+            self.graph_emb_dim = self.node_emb_dim
+        else:
+            raise ValueError(f"Invalid readout: {readout_op}")
+    
+    def forward(self, combined_emb, static_emb, dynamic_emb, batch=None):
+        """
+        Compute graph-level embedding
+        
+        Args:
+            combined_emb: Combined node embeddings [num_nodes, combined_dim]
+            static_emb: Static node embeddings [num_nodes, static_dim]
+            dynamic_emb: Dynamic node embeddings [num_nodes, dynamic_dim]
+            batch: Batch assignment for nodes (None means single graph)
+        
+        Returns:
+            graph_emb: Graph-level embedding [1, graph_emb_dim] or [batch_size, graph_emb_dim]
+        """
+        # Select which embeddings to use
+        if self.readout_node_type == "combined":
+            node_emb = combined_emb
+        elif self.readout_node_type == "static":
+            node_emb = static_emb
+        elif self.readout_node_type == "dynamic":
+            node_emb = dynamic_emb
+        
+        # Apply readout operation (single graph - aggregate all nodes)
+        if self.readout_op == 'max':
+            graph_emb = node_emb.max(dim=0, keepdim=True)[0]
+        elif self.readout_op == 'mean':
+            graph_emb = node_emb.mean(dim=0, keepdim=True)
+        elif self.readout_op == 'sum':
+            graph_emb = node_emb.sum(dim=0, keepdim=True)
+        elif self.readout_op == 'min':
+            graph_emb = node_emb.min(dim=0, keepdim=True)[0]
+        
+        return graph_emb
+
+
 class EdgeModel(nn.Module):
     """
-    Edge Model for link prediction
+    Edge Model for link prediction with multi-task learning
     
     Predicts head, relation, and tail entities for temporal triplets.
     
@@ -390,9 +454,10 @@ class EdgeModel(nn.Module):
         rel_embed_dim: Relation embedding dimension
         combiner: Combiner module
         dropout: Dropout rate
+        graph_readout_op: Graph readout operation
     """
     
-    def __init__(self, num_entities, num_rels, rel_embed_dim, combiner, dropout=0.0):
+    def __init__(self, num_entities, num_rels, rel_embed_dim, combiner, dropout=0.0, graph_readout_op='max'):
         super().__init__()
         
         self.num_entities = num_entities
@@ -402,31 +467,58 @@ class EdgeModel(nn.Module):
         self.combiner = combiner
         self.combined_emb_dim = combiner.combined_emb_dim
         
-        # Prediction heads
-        self.transform_tail = nn.Sequential(
-            nn.Linear(self.combined_emb_dim + rel_embed_dim * 2, 2 * (self.combined_emb_dim + rel_embed_dim * 2)),
+        # Graph readout module
+        self.graph_readout = GraphReadout(combiner, readout_op=graph_readout_op, readout_node_type='combined')
+        graph_emb_dim = self.graph_readout.graph_emb_dim
+        
+        # Head prediction: graph_emb -> head entity
+        self.transform_head = nn.Sequential(
+            nn.Linear(graph_emb_dim, 4 * graph_emb_dim),
             nn.Tanh(),
-            nn.Linear(2 * (self.combined_emb_dim + rel_embed_dim * 2), num_entities)
+            nn.Linear(4 * graph_emb_dim, num_entities)
+        )
+        
+        # Relation prediction: combined_emb + graph_emb -> relation
+        node_graph_emb_dim = self.combined_emb_dim + graph_emb_dim
+        self.transform_rel = nn.Sequential(
+            nn.Linear(node_graph_emb_dim, node_graph_emb_dim),
+            nn.Tanh(),
+            nn.Linear(node_graph_emb_dim, num_rels)
+        )
+        
+        # Tail prediction: combined_emb + graph_emb + rel_emb -> tail entity
+        node_graph_rel_emb_dim = self.combined_emb_dim + graph_emb_dim + rel_embed_dim * 2
+        self.transform_tail = nn.Sequential(
+            nn.Linear(node_graph_rel_emb_dim, 2 * node_graph_rel_emb_dim),
+            nn.Tanh(),
+            nn.Linear(2 * node_graph_rel_emb_dim, num_entities)
         )
         
         self.dropout = nn.Dropout(dropout)
         self.criterion = nn.CrossEntropyLoss()
     
-    def forward(self, data, combined_emb, dynamic_relation_emb, target_tails):
+    def forward(self, data, combined_emb, static_emb, dynamic_emb, dynamic_relation_emb, target_heads, target_rels, target_tails):
         """
-        Forward pass for link prediction.
+        Forward pass for multi-task link prediction.
         
         Args:
             data: PyG Data object
-            combined_emb: Combined entity embeddings
+            combined_emb: Combined entity embeddings [num_nodes, combined_dim]
+            static_emb: Static entity embeddings [num_nodes, static_dim]
+            dynamic_emb: Dynamic entity embeddings [num_nodes, dynamic_dim]
             dynamic_relation_emb: Dynamic relation embeddings
-            target_tails: Target tail entities
+            target_heads: Target head entities (local indices)
+            target_rels: Target relations
+            target_tails: Target tail entities (local indices)
         
         Returns:
-            Loss and predictions
+            Total loss and predictions (head_pred, rel_pred, tail_pred)
         """
         edge_index = data.edge_index
         edge_type = data.edge_type.long()
+        
+        # Compute graph-level embedding
+        graph_emb = self.graph_readout(combined_emb, static_emb, dynamic_emb)
         
         # Get head embeddings
         edge_head_emb = combined_emb[edge_index[0]]
@@ -441,17 +533,34 @@ class EdgeModel(nn.Module):
         
         edge_rel_embeds = torch.cat((edge_static_rel_embeds, edge_dynamic_rel_embeds), dim=1)
         
-        # Predict tail
-        emb = torch.cat((edge_head_emb, edge_rel_embeds), dim=1)
-        emb = self.dropout(emb)
-        tail_pred = self.transform_tail(emb)
+        # 1. Head prediction
+        graph_emb_repeat = graph_emb.repeat(len(edge_head_emb), 1)
+        head_emb = self.dropout(graph_emb_repeat)
+        head_pred = self.transform_head(head_emb)
         
-        # Compute loss
+        # Map local head indices to global entity IDs
+        global_head_ids = data.node_id[target_heads].long()
+        log_prob_head = -self.criterion(head_pred, global_head_ids)
+        
+        # 2. Relation prediction
+        rel_emb = torch.cat((edge_head_emb, graph_emb_repeat), dim=1)
+        rel_emb = self.dropout(rel_emb)
+        rel_pred = self.transform_rel(rel_emb)
+        log_prob_rel = -self.criterion(rel_pred, target_rels.long())
+        
+        # 3. Tail prediction
+        tail_emb = torch.cat((edge_head_emb, graph_emb_repeat, edge_rel_embeds), dim=1)
+        tail_emb = self.dropout(tail_emb)
+        tail_pred = self.transform_tail(tail_emb)
+        
         # Map local tail indices to global entity IDs
         global_tail_ids = data.node_id[target_tails].long()
         log_prob_tail = -self.criterion(tail_pred, global_tail_ids)
         
-        return log_prob_tail, tail_pred
+        # Multi-task loss (same weights as DGL: tail + 0.2*rel + 0.1*head)
+        log_prob = log_prob_tail + 0.2 * log_prob_rel + 0.1 * log_prob_head
+        
+        return log_prob, (head_pred, rel_pred, tail_pred)
 
 
 class KGTransformerPyG(nn.Module):
@@ -569,13 +678,32 @@ class KGTransformerPyG(nn.Module):
         # Get combined embeddings for nodes in batch
         batch_data = batch_data.to(self.device)
         static_structural = self.static_entity_embeds.structural[batch_data.node_id.cpu()].to(self.device)
+        static_temporal = self.static_entity_embeds.temporal[batch_data.node_id.cpu()].to(self.device)
         dynamic_structural = self.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), :, :].mean(dim=1).to(self.device)
+        dynamic_temporal = self.dynamic_entity_embeds.temporal[batch_data.node_id.cpu(), :, :, :].mean(dim=1).mean(dim=-1).to(self.device)
         
         combined_emb = self.combiner(static_structural, dynamic_structural, batch_data)
         
-        # Link prediction
+        # Prepare static and dynamic embeddings for graph readout
+        # Combine structural and temporal for complete embeddings
+        static_emb = (static_structural + static_temporal) / 2  # Simple average
+        dynamic_emb = (dynamic_structural + dynamic_temporal) / 2  # Simple average
+        
+        # Link prediction with multi-task learning
+        target_heads = batch_data.edge_index[0]
+        target_rels = batch_data.edge_type
         target_tails = batch_data.edge_index[1]
-        log_prob, tail_pred = self.edge_model(batch_data, combined_emb, self.dynamic_relation_embeds.temporal.to(self.device), target_tails)
+        
+        log_prob, (head_pred, rel_pred, tail_pred) = self.edge_model(
+            batch_data, 
+            combined_emb, 
+            static_emb,
+            dynamic_emb,
+            self.dynamic_relation_embeds.temporal.to(self.device), 
+            target_heads,
+            target_rels,
+            target_tails
+        )
         
         return log_prob, tail_pred
 

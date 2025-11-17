@@ -113,6 +113,35 @@ python train_kgt_pyg.py \
     --save_dir checkpoints
 ```
 
+### 5. Evaluate Model
+
+```bash
+# Evaluate trained checkpoint with comprehensive metrics
+python evaluate_checkpoint.py \
+    --checkpoint checkpoints/kgt_pyg_best.pt \
+    --split test \
+    --device cuda
+
+# Or evaluate during training
+python train_kgt_pyg.py \
+    --device cuda \
+    --epochs 100 \
+    --save_model \
+    --eval_rankings  # Compute MRR, Recall@K on test set
+```
+
+**Evaluation Metrics**:
+- **MRR (Mean Reciprocal Rank)**: Primary metric for link prediction
+- **Recall@K (Hits@K)**: K = 1, 3, 10, 100
+- **Mean Rank / Median Rank**: Additional ranking statistics
+
+**Current Results** (12 epochs):
+- MRR: 0.0331
+- Recall@10: 0.0584
+- See `EVALUATION_RESULTS.md` for detailed analysis
+
+Results are saved in both human-readable and FinDKG-compatible formats.
+
 ## 📁 Project Structure
 
 ```
@@ -132,14 +161,20 @@ financial-dynamic-knowledge-graph/
 │   │   │   └── embedding_updater.py  # RNN temporal encoders
 │   │   └── pyg_kgtransformer.py   # Complete model
 │   │
-│   └── data_processing/
-│       └── pyg_dataset.py         # PyG dataset & dataloaders
+│   ├── data_processing/
+│   │   └── pyg_dataset.py         # PyG dataset & dataloaders
+│   │
+│   └── evaluation/
+│       ├── metrics.py             # Standard KG metrics
+│       ├── temporal_metrics.py    # FinDKG temporal metrics
+│       └── README.md              # Evaluation documentation
 │
 ├── docs/
 │   ├── ARCHITECTURE.md            # Technical deep-dive
 │   └── DATASET.md                 # Dataset information
 │
 ├── train_kgt_pyg.py               # Training script
+├── evaluate_kgt_pyg.py            # Evaluation script
 ├── test_kgt_pyg.py                # Test suite
 └── README.md                      # This file
 ```

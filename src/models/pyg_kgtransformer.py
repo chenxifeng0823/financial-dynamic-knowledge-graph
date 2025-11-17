@@ -56,8 +56,8 @@ class ConfigArgs:
         self.lr = 0.001
         self.weight_decay = 0.00001
         self.epochs = 100
-        self.early_stop = True
-        self.patience = 10
+        self.early_stop = False  # Disabled by default - train for full epochs like original paper (150 epochs)
+        self.patience = 50  # Increased patience if early stopping is enabled
         
         # Other
         self.inter_event_dtype = torch.float32

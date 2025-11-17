@@ -17,6 +17,7 @@ from src.models.distmult import DistMult
 from src.models.complex import ComplEx
 from src.models.temporal_transe import TemporalTransE
 from src.evaluation import evaluate_model
+from src.evaluation.temporal_metrics import compute_ranking_metrics, print_ranking_metrics
 
 
 def parse_args():

@@ -243,7 +243,15 @@ def main(args):
     
     # Training loop
     print(f"\nStarting training for {config.epochs} epochs...")
-    best_val_loss = float('inf')
+    
+    # Early stopping criterion (matching DGL)
+    if hasattr(config, 'early_stop_criterion') and config.early_stop_criterion == 'MRR':
+        best_val_metric = 0.0  # Higher is better for MRR
+        use_mrr_criterion = True
+    else:
+        best_val_metric = float('inf')  # Lower is better for loss
+        use_mrr_criterion = False
+    
     patience_counter = 0
     
     for epoch in range(1, config.epochs + 1):
@@ -254,12 +262,23 @@ def main(args):
         train_loss = train_epoch(model, train_loader, optimizer, epoch, args.device)
         
         # Validate
-        val_loss = evaluate(model, val_loader, args.device)
-        print(f'Validation Loss: {val_loss:.4f}')
+        if use_mrr_criterion and args.eval_rankings:
+            # Use MRR for early stopping (matching DGL)
+            val_metrics, _ = evaluate_with_rankings(model, val_loader, args.device, num_entities)
+            val_metric = val_metrics['MRR']
+            val_loss = evaluate(model, val_loader, args.device)  # Still compute loss for logging
+            print(f'Validation Loss: {val_loss:.4f}, MRR: {val_metric:.4f}')
+            improved = val_metric > best_val_metric
+        else:
+            # Use loss for early stopping
+            val_loss = evaluate(model, val_loader, args.device)
+            val_metric = val_loss
+            print(f'Validation Loss: {val_loss:.4f}')
+            improved = val_metric < best_val_metric
         
         # Early stopping
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if improved:
+            best_val_metric = val_metric
             patience_counter = 0
             
             # Save best model
@@ -270,7 +289,8 @@ def main(args):
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    'val_loss': val_loss,
+                    'val_loss': val_loss if not use_mrr_criterion else None,
+                    'val_mrr': val_metric if use_mrr_criterion else None,
                     'config': config
                 }, save_path)
                 print(f"  Model saved to {save_path}")

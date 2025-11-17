@@ -52,17 +52,18 @@ class ConfigArgs:
         self.embedding_updater_activation = F.tanh
         self.combiner_activation = F.tanh
         
-        # Training
-        self.lr = 0.001
+        # Training (matching DGL train_DKG_run.py)
+        self.lr = 0.0005  # DGL uses 0.0005
         self.weight_decay = 0.00001
-        self.epochs = 100
-        self.early_stop = False  # Disabled by default - train for full epochs like original paper (150 epochs)
-        self.patience = 50  # Increased patience if early stopping is enabled
+        self.epochs = 150  # DGL trains for 150 epochs
+        self.early_stop = True  # DGL uses early stopping
+        self.patience = 10  # DGL patience
+        self.early_stop_criterion = 'MRR'  # DGL criterion
         
         # Other
         self.inter_event_dtype = torch.float32
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.seed = 101
+        self.seed = 41  # DGL uses seed 41
 
 
 def get_embedding(num_items, dims, zero_init=False):

@@ -235,7 +235,7 @@ def main(args):
     print(f"  Total parameters: {num_params:,}")
     
     # Optimizer
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.lr,
         weight_decay=config.weight_decay

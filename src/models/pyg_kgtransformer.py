@@ -679,16 +679,15 @@ class KGTransformerPyG(nn.Module):
         # Get combined embeddings for nodes in batch
         batch_data = batch_data.to(self.device)
         static_structural = self.static_entity_embeds.structural[batch_data.node_id.cpu()].to(self.device)
-        static_temporal = self.static_entity_embeds.temporal[batch_data.node_id.cpu()].to(self.device)
         dynamic_structural = self.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), :, :].mean(dim=1).to(self.device)
-        dynamic_temporal = self.dynamic_entity_embeds.temporal[batch_data.node_id.cpu(), :, :, :].mean(dim=1).mean(dim=-1).to(self.device)
         
+        # Combiner combines static_structural + dynamic_structural
         combined_emb = self.combiner(static_structural, dynamic_structural, batch_data)
         
-        # Prepare static and dynamic embeddings for graph readout
-        # Combine structural and temporal for complete embeddings
-        static_emb = (static_structural + static_temporal) / 2  # Simple average
-        dynamic_emb = (dynamic_structural + dynamic_temporal) / 2  # Simple average
+        # For graph readout, use the SAME embeddings that went into the combiner
+        # (NOT averaged with temporal - DGL uses structural embeddings only for graph readout)
+        static_emb = static_structural
+        dynamic_emb = dynamic_structural
         
         # Link prediction with multi-task learning
         target_heads = batch_data.edge_index[0]

@@ -36,10 +36,14 @@ def train_epoch(model, train_loader, optimizer, epoch, device):
     )
     
     for batch_idx, batch_data in enumerate(train_loader):
+        # CRITICAL: Build cumulative graph BEFORE forward pass
+        # The model needs to see all historical edges, not just current batch
+        cumul_data = cumul_builder.add_batch(batch_data)
+        
         optimizer.zero_grad()
         
-        # Forward pass
-        log_prob, tail_pred = model(batch_data)
+        # Forward pass with CUMULATIVE graph (not just batch_data)
+        log_prob, tail_pred = model(cumul_data)
         
         # Loss (negative log likelihood)
         loss = -log_prob
@@ -50,9 +54,6 @@ def train_epoch(model, train_loader, optimizer, epoch, device):
         
         total_loss += loss.item()
         num_batches += 1
-        
-        # Add batch to cumulative graph
-        cumul_data = cumul_builder.add_batch(batch_data)
         
         if batch_idx % 10 == 0:
             print(f'  Batch [{batch_idx}/{len(train_loader)}] Loss: {loss.item():.4f}')
@@ -79,16 +80,16 @@ def evaluate(model, loader, device):
     )
     
     for batch_data in loader:
-        # Forward pass
-        log_prob, tail_pred = model(batch_data)
+        # Build cumulative graph BEFORE forward pass
+        cumul_data = cumul_builder.add_batch(batch_data)
+        
+        # Forward pass with CUMULATIVE graph
+        log_prob, tail_pred = model(cumul_data)
         
         # Loss
         loss = -log_prob
         total_loss += loss.item()
         num_batches += 1
-        
-        # Add batch to cumulative graph
-        cumul_data = cumul_builder.add_batch(batch_data)
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
     return avg_loss
@@ -124,15 +125,18 @@ def evaluate_with_rankings(model, loader, device, num_entities):
     batch_tqdm = tqdm(loader, desc="Evaluating")
     
     for batch_data in batch_tqdm:
-        # Forward pass
-        log_prob, tail_pred = model(batch_data)  # tail_pred: [num_edges, num_entities]
+        # Build cumulative graph BEFORE forward pass
+        cumul_data = cumul_builder.add_batch(batch_data)
+        
+        # Forward pass with CUMULATIVE graph
+        log_prob, tail_pred = model(cumul_data)  # tail_pred: [num_edges, num_entities]
         
         # Loss
         loss = -log_prob
         total_loss += loss.item()
         num_batches += 1
         
-        # Compute ranks for this batch
+        # Compute ranks for this batch (use batch_data for true targets)
         edge_index = batch_data.edge_index
         true_tails = edge_index[1]  # True tail entities
         

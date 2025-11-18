@@ -36,14 +36,47 @@ def train_epoch(model, train_loader, optimizer, epoch, device):
     )
     
     for batch_idx, batch_data in enumerate(train_loader):
-        # CRITICAL: Build cumulative graph BEFORE forward pass
-        # The model needs to see all historical edges, not just current batch
+        # Build cumulative graph for embedding updates
         cumul_data = cumul_builder.add_batch(batch_data)
         
         optimizer.zero_grad()
         
-        # Forward pass with CUMULATIVE graph (not just batch_data)
-        log_prob, tail_pred = model(cumul_data)
+        # TWO-STAGE APPROACH (like DGL):
+        # Stage 1: Update embeddings with cumulative graph (temporal context)
+        # Stage 2: Predict on batch edges only (memory efficient)
+        
+        # Update embeddings using cumulative graph
+        model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
+            cumul_data,
+            model.static_entity_embeds,
+            model.dynamic_entity_embeds,
+            model.dynamic_relation_embeds,
+            model.device
+        )
+        
+        # Predict on BATCH edges only (not cumulative)
+        batch_data = batch_data.to(model.device)
+        static_structural = model.static_entity_embeds.structural[batch_data.node_id.cpu()].to(model.device)
+        dynamic_structural = model.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), :, :].mean(dim=1).to(model.device)
+        
+        combined_emb = model.combiner(static_structural, dynamic_structural, batch_data)
+        static_emb = static_structural
+        dynamic_emb = dynamic_structural
+        
+        target_heads = batch_data.edge_index[0]
+        target_rels = batch_data.edge_type
+        target_tails = batch_data.edge_index[1]
+        
+        log_prob, (head_pred, rel_pred, tail_pred) = model.edge_model(
+            batch_data,
+            combined_emb,
+            static_emb,
+            dynamic_emb,
+            model.dynamic_relation_embeds.temporal.to(model.device),
+            target_heads,
+            target_rels,
+            target_tails
+        )
         
         # Loss (negative log likelihood)
         loss = -log_prob
@@ -80,11 +113,20 @@ def evaluate(model, loader, device):
     )
     
     for batch_data in loader:
-        # Build cumulative graph BEFORE forward pass
+        # Build cumulative graph for embedding updates
         cumul_data = cumul_builder.add_batch(batch_data)
         
-        # Forward pass with CUMULATIVE graph
-        log_prob, tail_pred = model(cumul_data)
+        # Update embeddings with cumulative graph
+        model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
+            cumul_data,
+            model.static_entity_embeds,
+            model.dynamic_entity_embeds,
+            model.dynamic_relation_embeds,
+            device
+        )
+        
+        # Predict on batch edges only
+        log_prob, tail_pred = model(batch_data)
         
         # Loss
         loss = -log_prob
@@ -125,18 +167,27 @@ def evaluate_with_rankings(model, loader, device, num_entities):
     batch_tqdm = tqdm(loader, desc="Evaluating")
     
     for batch_data in batch_tqdm:
-        # Build cumulative graph BEFORE forward pass
+        # Build cumulative graph for embedding updates
         cumul_data = cumul_builder.add_batch(batch_data)
         
-        # Forward pass with CUMULATIVE graph
-        log_prob, tail_pred = model(cumul_data)  # tail_pred: [num_edges, num_entities]
+        # Update embeddings with cumulative graph
+        model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
+            cumul_data,
+            model.static_entity_embeds,
+            model.dynamic_entity_embeds,
+            model.dynamic_relation_embeds,
+            device
+        )
+        
+        # Predict on batch edges only
+        log_prob, tail_pred = model(batch_data)  # tail_pred: [num_edges, num_entities]
         
         # Loss
         loss = -log_prob
         total_loss += loss.item()
         num_batches += 1
         
-        # Compute ranks for this batch (use batch_data for true targets)
+        # Compute ranks for this batch
         edge_index = batch_data.edge_index
         true_tails = edge_index[1]  # True tail entities
         

@@ -68,12 +68,16 @@ def train_epoch(model, train_loader, optimizer, epoch, device):
         target_rels = batch_data.edge_type
         target_tails = batch_data.edge_index[1]
         
+        # Extract relation embeddings (last hidden state from structural RNN)
+        # Shape: [num_relations, embed_dim, 2] where 2 is bidirectional (sender/receiver)
+        dynamic_rel_emb = model.dynamic_relation_embeds.structural[:, -1, :, :].to(model.device)
+        
         log_prob, (head_pred, rel_pred, tail_pred) = model.edge_model(
             batch_data,
             combined_emb,
             static_emb,
             dynamic_emb,
-            model.dynamic_relation_embeds.temporal.to(model.device),
+            dynamic_rel_emb,  # Pass structural embeddings, not temporal
             target_heads,
             target_rels,
             target_tails

@@ -527,9 +527,10 @@ class EdgeModel(nn.Module):
         # Get relation embeddings (static + dynamic)
         edge_static_rel_embeds = self.rel_embeds[edge_type]
         
-        # Dynamic relation embeddings: [num_relations, num_rnn_layers, rel_embed_dim, 2]
-        # Select last RNN layer and destination context (index 1)
-        dynamic_rel_emb = dynamic_relation_emb[:, -1, :, 1]  # [num_relations, rel_embed_dim]
+        # Dynamic relation embeddings: already extracted last hidden state [:, -1, :, :]
+        # Shape: [num_relations, rel_embed_dim, 2] where 2 is bidirectional
+        # Select destination context (index 1 - relation-dest as in DGL)
+        dynamic_rel_emb = dynamic_relation_emb[:, :, 1]  # [num_relations, rel_embed_dim]
         edge_dynamic_rel_embeds = dynamic_rel_emb[edge_type]
         
         edge_rel_embeds = torch.cat((edge_static_rel_embeds, edge_dynamic_rel_embeds), dim=1)
@@ -695,12 +696,16 @@ class KGTransformerPyG(nn.Module):
         target_rels = batch_data.edge_type
         target_tails = batch_data.edge_index[1]
         
+        # Extract relation embeddings (last hidden state from structural RNN)
+        # Shape: [num_relations, embed_dim, 2] where 2 is bidirectional (sender/receiver)
+        dynamic_rel_emb = self.dynamic_relation_embeds.structural[:, -1, :, :].to(self.device)
+        
         log_prob, (head_pred, rel_pred, tail_pred) = self.edge_model(
             batch_data, 
             combined_emb, 
             static_emb,
             dynamic_emb,
-            self.dynamic_relation_embeds.temporal.to(self.device), 
+            dynamic_rel_emb,  # Pass structural embeddings (last hidden state)
             target_heads,
             target_rels,
             target_tails

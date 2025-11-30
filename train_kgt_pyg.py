@@ -194,13 +194,15 @@ def evaluate_with_rankings(model, loader, device, num_entities):
         
         # Compute ranks for this batch
         edge_index = batch_data.edge_index
-        true_tails = edge_index[1]  # True tail entities
+        true_tails_local = edge_index[1]  # True tail entities (LOCAL indices)
         
         # For each edge in the batch
         for i in range(tail_pred.size(0)):
-            scores = tail_pred[i]  # Scores for all entities
-            true_tail = true_tails[i].item()
-            true_score = scores[true_tail]
+            scores = tail_pred[i]  # Scores for all entities (GLOBAL)
+            
+            # Map local tail index to global entity ID
+            global_tail_id = batch_data.node_id[true_tails_local[i]].item()
+            true_score = scores[global_tail_id]
             
             # Compute rank using optimistic ranking
             # rank = (# entities with higher score) + (# entities with equal score - 1) / 2 + 1
@@ -217,9 +219,6 @@ def evaluate_with_rankings(model, loader, device, num_entities):
                 'MRR': f'{current_mrr:.4f}',
                 'Ranks': len(all_ranks)
             })
-        
-        # Add batch to cumulative graph (for next iteration)
-        cumul_data = cumul_builder.add_batch(batch_data)
     
     # Compute metrics
     avg_loss = total_loss / num_batches if num_batches > 0 else 0

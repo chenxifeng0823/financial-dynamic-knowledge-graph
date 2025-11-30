@@ -57,7 +57,8 @@ def train_epoch(model, train_loader, optimizer, epoch, device):
         # Predict on BATCH edges only (not cumulative)
         batch_data = batch_data.to(model.device)
         static_structural = model.static_entity_embeds.structural[batch_data.node_id.cpu()].to(model.device)
-        dynamic_structural = model.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), :, :].mean(dim=1).to(model.device)
+        # Use last hidden state from RNN (matching DGL)
+        dynamic_structural = model.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), -1, :].to(model.device)
         
         combined_emb = model.combiner(static_structural, dynamic_structural, batch_data)
         static_emb = static_structural

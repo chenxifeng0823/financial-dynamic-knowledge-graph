@@ -1,0 +1,21 @@
+Configuration:
+  model: KGTransformer_PyG
+  num_entities: 13645
+  num_relations: 15
+  embedding_dim: 200
+  num_epochs_trained: 13
+  seed: 101
+
+Metrics:
+  MRR: 0.033162
+  REC1: 0.019512
+  Hits@1: 0.019512
+  REC3: 0.035886
+  Hits@3: 0.035886
+  REC10: 0.053409
+  Hits@10: 0.053409
+  REC100: 0.120897
+  Hits@100: 0.120897
+  MR: 2689.721976
+  MedianR: 1562.000000
+  loss: 11.606418

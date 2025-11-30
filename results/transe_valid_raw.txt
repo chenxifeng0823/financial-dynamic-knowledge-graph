@@ -1,0 +1,12 @@
+Model: transe
+Checkpoint: checkpoints/best_model.pth
+Split: valid
+Filtered: False
+
+Metrics:
+  mrr: 0.0821
+  hits@1: 0.0402
+  hits@3: 0.0867
+  hits@10: 0.1593
+  mean_rank: 1693.4903
+  median_rank: 208.0000

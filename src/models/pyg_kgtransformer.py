@@ -679,7 +679,8 @@ class KGTransformerPyG(nn.Module):
         # Get combined embeddings for nodes in batch
         batch_data = batch_data.to(self.device)
         static_structural = self.static_entity_embeds.structural[batch_data.node_id.cpu()].to(self.device)
-        dynamic_structural = self.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), :, :].mean(dim=1).to(self.device)
+        # Use last hidden state from RNN (matching DGL)
+        dynamic_structural = self.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), -1, :].to(self.device)
         
         # Combiner combines static_structural + dynamic_structural
         combined_emb = self.combiner(static_structural, dynamic_structural, batch_data)

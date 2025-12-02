@@ -361,6 +361,7 @@ if __name__ == "__main__":
     parser.add_argument('--embed_dim', type=int, default=200)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--window_size', type=int, default=10, help='History window for Attention model')
+    parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save models')
     
     args = parser.parse_args()
     run_experiment(args)

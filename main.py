@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 import torch
+import torch.nn.functional as F
 import wandb
 import numpy as np
 from pathlib import Path
@@ -35,10 +36,10 @@ def get_triplets_from_batch(batch_data, num_negatives=1, num_entities=None):
     Simple models expect dictionary with 'positive' and 'negatives'.
     """
     # Positive: [Batch_Edges, 4] -> (h, r, t, time)
-    heads = batch_data.node_id[batch_data.edge_index[0]]
-    tails = batch_data.node_id[batch_data.edge_index[1]]
-    rels = batch_data.edge_type
-    times = batch_data.timestamps
+    heads = batch_data.node_id[batch_data.edge_index[0]].long()
+    tails = batch_data.node_id[batch_data.edge_index[1]].long()
+    rels = batch_data.edge_type.long()
+    times = batch_data.timestamps.long()  # Convert times to long for stacking
     
     pos_triplets = torch.stack([heads, rels, tails, times], dim=1)
     
@@ -115,7 +116,11 @@ def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, mo
             else:
                 # Softplus Loss (Logistic Loss) for DistMult/ComplEx
                 # log(1 + exp(-pos)) + log(1 + exp(neg))
-                loss = torch.mean(torch.softplus(-pos_scores) + torch.softplus(neg_scores))
+                # pos_scores: [batch], neg_scores: [batch, num_negatives]
+                # Expand pos_scores to match negatives
+                pos_loss = F.softplus(-pos_scores).mean()
+                neg_loss = F.softplus(neg_scores).mean()
+                loss = pos_loss + neg_loss
                 
         loss.backward()
         optimizer.step()
@@ -138,6 +143,7 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
     
     for batch_data in loader:
         batch_data = batch_data.to(device)
+        batch_ranks = []  # Initialize batch_ranks for this batch
         
         # --- Deep Temporal Models ---
         if model_type in ['RNN', 'Attention']:
@@ -166,8 +172,8 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
             loss = 0 # Placeholder for evaluation loss
             
             # Ranking: Score all entities for each (h, r, ?)
-            heads = batch_data.node_id[batch_data.edge_index[0]]
-            rels = batch_data.edge_type
+            heads = batch_data.node_id[batch_data.edge_index[0]].long()
+            rels = batch_data.edge_type.long()
             
             # Simple models have a .predict() or .score() method
             # We need to score against ALL entities
@@ -191,8 +197,8 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
                 # Expand h, r, time: [B, 1] -> [B, N]
                 h_exp = heads.unsqueeze(1).expand(-1, num_entities)
                 r_exp = rels.unsqueeze(1).expand(-1, num_entities)
-                t_exp = batch_data.timestamps.unsqueeze(1).expand(-1, num_entities)
-                all_ents = torch.arange(num_entities, device=device).unsqueeze(0).expand(heads.size(0), -1)
+                t_exp = batch_data.timestamps.long().unsqueeze(1).expand(-1, num_entities)
+                all_ents = torch.arange(num_entities, device=device, dtype=torch.long).unsqueeze(0).expand(heads.size(0), -1)
                 
                 scores = model.score(h_exp, r_exp, all_ents, t_exp)
                 
@@ -205,14 +211,23 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
         num_batches += 1
         
         # Calculate Ranks
-        true_tails_global = batch_data.node_id[batch_data.edge_index[1].cpu()].to(device)
+        true_tails_global = batch_data.node_id[batch_data.edge_index[1]].long().to(device)
         
         for i in range(len(true_tails_global)):
-            target_id = true_tails_global[i]
-            target_score = scores[i, target_id]
+            target_id = true_tails_global[i].long().item()  # Convert to Python int for indexing
+            # Handle both 1D and 2D score tensors
+            if scores.dim() == 1:
+                # For models that return 1D scores (flattened)
+                # This shouldn't happen in proper implementation, but handle it
+                target_score = scores[i] if i < len(scores) else 0
+                batch_score = scores
+            else:
+                # For models that return 2D scores [batch, num_entities]
+                target_score = scores[i, target_id]
+                batch_score = scores[i]
             
-            higher = (scores[i] > target_score).sum().item()
-            equal = (scores[i] == target_score).sum().item()
+            higher = (batch_score > target_score).sum().item()
+            equal = (batch_score == target_score).sum().item()
             rank = higher + (equal - 1.0) / 2.0 + 1.0
             batch_ranks.append(rank)
             

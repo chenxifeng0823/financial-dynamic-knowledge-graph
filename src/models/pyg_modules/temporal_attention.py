@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from ...utils.debug_utils import check_nan  # Debug utility
 
 class TemporalPositionalEncoding(nn.Module):
     """
@@ -74,25 +75,68 @@ class TemporalAttentionLayer(nn.Module):
         # Reshape Query to [Batch, 1, d_model] for attention
         query = query.unsqueeze(1) 
         
+        # Debug inputs
+        if torch.isnan(query).any(): print("❌ Query has NaNs")
+        if torch.isnan(history).any(): print("❌ History has NaNs")
+        
         # Projections
         Q = self.q_proj(query).view(batch_size, 1, self.num_heads, self.head_dim).transpose(1, 2)
         K = self.k_proj(history).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         V = self.v_proj(history).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         
+        # Debug Projections
+        if torch.isnan(Q).any(): print(f"❌ Q has NaNs! Range: [{Q.min()}, {Q.max()}]")
+        if torch.isnan(K).any(): print(f"❌ K has NaNs! Range: [{K.min()}, {K.max()}]")
+        
         # Scaled Dot-Product Attention
         # Scores: [Batch, Heads, 1, Seq_Len]
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
         
+        # Debug Scores
+        if torch.isnan(scores).any(): 
+            print(f"❌ Scores (pre-mask) has NaNs!")
+        
         if mask is not None:
             # Mask should be [Batch, 1, 1, Seq_Len]
             mask = mask.unsqueeze(1).unsqueeze(1)
+            
+            # Check for empty history
+            is_all_masked = (mask.sum(dim=-1) == 0) # [Batch, 1, 1]
+            if is_all_masked.any():
+                # print(f"⚠️ Found {is_all_masked.sum().item()} nodes with NO history (mask all 0)")
+                pass
+            
             scores = scores.masked_fill(mask == 0, float('-inf'))
+            
+            # Handle case where all history is masked (no history)
+            if is_all_masked.any():
+                # Set scores to 0.0 where mask is all 0, so softmax produces uniform distribution
+                scores = scores.masked_fill(is_all_masked.unsqueeze(-1), 0.0)
         
         attn_weights = F.softmax(scores, dim=-1)
+        
+        # Debug Softmax Output
+        if torch.isnan(attn_weights).any():
+            print(f"❌ Softmax output has NaNs!")
+            print(f"   Scores min/max: {scores.min()}/{scores.max()}")
+            # Check specifically for the case that caused trouble
+            nan_mask = torch.isnan(attn_weights)
+            if nan_mask.any():
+                idx = torch.where(nan_mask)[0][0]
+                print(f"   Example NaN Score slice: {scores[idx, 0, 0, :]}")
+        
+        # If we had all-masked rows, attn_weights are uniform now.
+        # We should zero them out if they are padding.
+        if mask is not None:
+            attn_weights = attn_weights.masked_fill(mask == 0, 0.0)
+            
         attn_weights = self.dropout(attn_weights)
         
         # Context: [Batch, Heads, 1, Head_Dim]
         context = torch.matmul(attn_weights, V)
+        
+        # Debug Context
+        if torch.isnan(context).any(): print(f"❌ Context has NaNs!")
         
         # Reshape and Output
         context = context.transpose(1, 2).contiguous().view(batch_size, 1, self.d_model)
@@ -100,7 +144,10 @@ class TemporalAttentionLayer(nn.Module):
         
         # Residual Connection + Layer Norm
         # Note: We add to the *query* (current state)
-        output = self.layer_norm(query.squeeze(1) + output)
+        res = query.squeeze(1) + output
+        output = self.layer_norm(res)
+        
+        if torch.isnan(output).any(): print(f"❌ Final output has NaNs!")
         
         return output
 

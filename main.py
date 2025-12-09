@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 import numpy as np
@@ -78,7 +79,11 @@ def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, mo
             cumul_data = cumul_builder.add_batch(batch_data)
             
             if model_type == 'RNN':
-                # Baseline manual two-stage
+                # Two-stage approach (matching DGL/main branch):
+                # Stage 1: Update embeddings with cumulative graph (temporal context)
+                # Stage 2: Predict on batch edges only (memory efficient)
+                
+                # Stage 1: Update embeddings using cumulative graph
                 model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
                     cumul_data,
                     model.static_entity_embeds,
@@ -86,12 +91,82 @@ def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, mo
                     model.dynamic_relation_embeds,
                     device
                 )
-                log_prob, _ = model(batch_data)
+                
+                # Stage 2: Predict on BATCH edges only (not cumulative)
+                batch_data = batch_data.to(device)
+                static_structural = model.static_entity_embeds.structural[batch_data.node_id.cpu()].to(device)
+                # Use last hidden state from RNN (matching DGL)
+                dynamic_structural = model.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), -1, :].to(device)
+                
+                combined_emb = model.combiner(static_structural, dynamic_structural, batch_data)
+                static_emb = static_structural
+                dynamic_emb = dynamic_structural
+                
+                target_heads = batch_data.edge_index[0]
+                target_rels = batch_data.edge_type
+                target_tails = batch_data.edge_index[1]
+                
+                # Extract relation embeddings (last hidden state from structural RNN)
+                # Shape: [num_relations, embed_dim, 2] where 2 is bidirectional (sender/receiver)
+                dynamic_rel_emb = model.dynamic_relation_embeds.structural[:, -1, :, :].to(device)
+                
+                log_prob, _ = model.edge_model(
+                    batch_data,
+                    combined_emb,
+                    static_emb,
+                    dynamic_emb,
+                    dynamic_rel_emb,  # Pass structural embeddings
+                    target_heads,
+                    target_rels,
+                    target_tails
+                )
+                
+                # Loss (negative log likelihood)
                 loss = -log_prob
                 
             elif model_type == 'Attention':
-                loss, _ = model(batch_data)
+                # Two-stage approach for Attention (same as RNN):
+                # Stage 1: Update embeddings with cumulative graph
+                # Stage 2: Predict on batch edges only
                 
+                # Move cumulative graph to device
+                cumul_data = cumul_data.to(device)
+                
+                # Stage 1: Update embeddings with cumulative graph
+                model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
+                    cumul_data,  # ← Use cumul_data, not batch_data!
+                    model.static_entity_embeds,
+                    model.dynamic_entity_embeds,
+                    model.dynamic_relation_embeds,
+                    device
+                )
+                
+                # Stage 2: Predict on BATCH edges only
+                batch_data = batch_data.to(device)
+                batch_nodes = batch_data.node_id.cpu()
+                static_emb = model.static_entity_embeds[batch_nodes].to(device)
+                dynamic_emb = model.dynamic_entity_embeds.structural[batch_nodes].to(device)
+                
+                heads_local = batch_data.edge_index[0]
+                tails_local = batch_data.edge_index[1]
+                rels = batch_data.edge_type
+                
+                head_emb = torch.cat([static_emb[heads_local], dynamic_emb[heads_local]], dim=1)
+                rel_emb = model.relation_embeds[rels]
+                
+                decoder_input = torch.cat([head_emb, rel_emb], dim=1)
+                tail_scores = model.decoder_head(decoder_input)  # [num_edges, num_entities]
+                
+                # Compute loss (cross-entropy)
+                global_tail_ids = batch_data.node_id[tails_local].long()
+                loss = F.cross_entropy(tail_scores, global_tail_ids)
+                
+                # Check for NaN loss
+                if torch.isnan(loss):
+                    print(f"❌ NaN loss detected at batch {num_batches}!")
+                    print(f"   tail_scores min/max: {tail_scores.min().item()}/{tail_scores.max().item()}")
+                    print(f"   tail_scores has nan: {torch.isnan(tail_scores).any().item()}")
+
         # --- Simple/Static Models (TransE, DistMult, etc) ---
         else:
             # Prepare batch dict with negatives
@@ -103,26 +178,20 @@ def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, mo
             neg_scores = outputs['neg_scores']
             
             # Margin Loss or similar
-            # TransE/TemporalTransE usually use Margin Ranking Loss
-            # DistMult/ComplEx usually use Softplus/CrossEntropy
-            
             if model_type in ['TransE', 'TemporalTransE']:
-                # pos_scores are negative distances (higher is better)
-                # We want pos > neg + margin
-                # MarginRankingLoss: max(0, -y * (x1 - x2) + margin)
-                # Here we manually compute: max(0, margin + neg - pos)
                 margin = model.margin if hasattr(model, 'margin') else 1.0
                 loss = torch.mean(torch.relu(margin + neg_scores - pos_scores.unsqueeze(1)))
             else:
-                # Softplus Loss (Logistic Loss) for DistMult/ComplEx
-                # log(1 + exp(-pos)) + log(1 + exp(neg))
-                # pos_scores: [batch], neg_scores: [batch, num_negatives]
-                # Expand pos_scores to match negatives
+                # Softplus Loss
                 pos_loss = F.softplus(-pos_scores).mean()
                 neg_loss = F.softplus(neg_scores).mean()
                 loss = pos_loss + neg_loss
                 
         loss.backward()
+        
+        # Gradient Clipping (Added for stability)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         
         total_loss += loss.item()
@@ -150,6 +219,11 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
             cumul_data = cumul_builder.add_batch(batch_data)
             
             if model_type == 'RNN':
+                # Two-stage approach for evaluation:
+                # Stage 1: Update embeddings with cumulative graph
+                # Stage 2: Get predictions for ranking (model() returns tail predictions for all entities)
+                
+                # Stage 1: Update embeddings with cumulative graph
                 model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
                     cumul_data,
                     model.static_entity_embeds,
@@ -157,12 +231,73 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
                     model.dynamic_relation_embeds,
                     device
                 )
-                log_prob, tail_pred = model(batch_data)
+                
+                # Stage 2: Get tail predictions for ranking (using batch data, not cumulative)
+                # Build embeddings and get predictions manually (same as training)
+                batch_data = batch_data.to(device)
+                static_structural = model.static_entity_embeds.structural[batch_data.node_id.cpu()].to(device)
+                dynamic_structural = model.dynamic_entity_embeds.structural[batch_data.node_id.cpu(), -1, :].to(device)
+                
+                combined_emb = model.combiner(static_structural, dynamic_structural, batch_data)
+                static_emb = static_structural
+                dynamic_emb = dynamic_structural
+                
+                target_heads = batch_data.edge_index[0]
+                target_rels = batch_data.edge_type
+                target_tails = batch_data.edge_index[1]
+                
+                dynamic_rel_emb = model.dynamic_relation_embeds.structural[:, -1, :, :].to(device)
+                
+                log_prob, (head_pred, rel_pred, tail_pred) = model.edge_model(
+                    batch_data,
+                    combined_emb,
+                    static_emb,
+                    dynamic_emb,
+                    dynamic_rel_emb,
+                    target_heads,
+                    target_rels,
+                    target_tails
+                )
+                
                 loss = -log_prob
-                scores = tail_pred[2] # (head, rel, tail)
+                scores = tail_pred  # [num_edges, num_entities] - scores for all entities
                 
             elif model_type == 'Attention':
-                loss, scores = model(batch_data)
+                # Two-stage approach for Attention evaluation:
+                # Stage 1: Update embeddings with cumulative graph
+                # Stage 2: Get predictions for ranking
+                
+                # Move cumulative graph to device
+                cumul_data = cumul_data.to(device)
+                
+                # Stage 1: Update embeddings with cumulative graph
+                model.dynamic_entity_embeds, model.dynamic_relation_embeds = model.embedding_updater(
+                    cumul_data,  # ← Use cumul_data, not batch_data!
+                    model.static_entity_embeds,
+                    model.dynamic_entity_embeds,
+                    model.dynamic_relation_embeds,
+                    device
+                )
+                
+                # Stage 2: Get tail predictions for ranking (using batch data)
+                batch_data = batch_data.to(device)
+                batch_nodes = batch_data.node_id.cpu()
+                static_emb = model.static_entity_embeds[batch_nodes].to(device)
+                dynamic_emb = model.dynamic_entity_embeds.structural[batch_nodes].to(device)
+                
+                heads_local = batch_data.edge_index[0]
+                tails_local = batch_data.edge_index[1]
+                rels = batch_data.edge_type
+                
+                head_emb = torch.cat([static_emb[heads_local], dynamic_emb[heads_local]], dim=1)
+                rel_emb = model.relation_embeds[rels]
+                
+                decoder_input = torch.cat([head_emb, rel_emb], dim=1)
+                scores = model.decoder_head(decoder_input)  # [num_edges, num_entities]
+                
+                # Compute loss
+                global_tail_ids = batch_data.node_id[tails_local].long()
+                loss = F.cross_entropy(scores, global_tail_ids)
         
         # --- Simple/Static Models ---
         else:
@@ -244,9 +379,17 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
     }
 
 def run_experiment(args):
+    # Determine model group for WandB organization
+    if args.model_type in ['TransE', 'DistMult', 'ComplEx', 'TemporalTransE']:
+        model_group = "Baselines"
+    else:
+        model_group = "Deep_Temporal"
+
     wandb.init(
-        project="findkg-model-comparison",
+        project="findkg-fix-rnn",
         name=f"{args.model_type}-seed{args.seed}",
+        group=model_group,  # Group runs by model type
+        tags=[model_group, args.model_type],
         config=args
     )
     
@@ -283,7 +426,13 @@ def run_experiment(args):
     elif args.model_type == 'Attention':
         class AttnConfig:
             def __init__(self):
+                # Simplified config: Use RGCN instead of KGT to avoid TypedLinear bugs
+                self.graph = "FinDKG"
                 self.device = device
+                self.num_node_types = 12  # FinDKG has 12 entity types
+                self.num_attn_heads = 4  # Must divide embed_dim evenly
+                self.num_gconv_layers = 2
+                self.graph_structural_conv = 'RGCN'  # ← Use RGCN instead of KGT (avoids TypedLinear)
                 self.static_entity_embed_dim = args.embed_dim
                 self.structural_dynamic_entity_embed_dim = args.embed_dim
                 self.temporal_dynamic_entity_embed_dim = args.embed_dim
@@ -291,6 +440,11 @@ def run_experiment(args):
                 self.dropout = 0.1
                 self.window_size = args.window_size
         model = KGTemporalAttention(num_entities, num_relations, AttnConfig()).to(device)
+        
+        # FIX: Re-initialize embeddings with Xavier (randn causes NaN in Transformers)
+        nn.init.xavier_uniform_(model.static_entity_embeds)
+        nn.init.xavier_uniform_(model.relation_embeds)
+        print("   ✅ Re-initialized Attention model with Xavier Uniform")
         
     elif args.model_type == 'TransE':
         model = TransE(num_entities, num_relations, embedding_dim=args.embed_dim).to(device)

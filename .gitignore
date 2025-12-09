@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 .Python
+wandb/
+wandb.env
+kg_env/
 build/
 develop-eggs/
 dist/

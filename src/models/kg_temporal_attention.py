@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from collections import namedtuple, deque
+from ..utils.debug_utils import check_nan  # Debug utility
 
 from .pyg_modules.rgcn import RGCN
 from .pyg_modules.graph_transformer import KGTransformer
@@ -59,8 +60,8 @@ class EmbeddingUpdaterAttention(nn.Module):
                 in_dim, structural_hid_dim, structural_hid_dim,
                 n_layers=num_gconv_layers,
                 num_rels=num_rels,
-                regularizer="bdd",
-                num_bases=100,
+                regularizer="basis",  # Changed from "bdd" to avoid divisibility requirement (128 % 100 != 0)
+                num_bases=None,       # Allow full relation matrices
                 dropout=dropout,
                 activation=activation,
                 layer_norm=False
@@ -152,6 +153,10 @@ class EmbeddingUpdaterAttention(nn.Module):
                 temporal: AttentionState (History window)
             dynamic_relation_emb: [R, D]
         """
+        # Debug Inputs
+        # check_nan(static_entity_emb, "static_entity_emb")
+        # check_nan(dynamic_entity_emb.structural, "dynamic_entity_emb.structural")
+        
         # 1. Spatial Convolution (Get current features)
         # Use static embeddings + graph structure to get spatial features
         # Note: In baseline, we used static structural embeddings
@@ -176,6 +181,8 @@ class EmbeddingUpdaterAttention(nn.Module):
                 batch_data.node_type.long(),
                 batch_data.edge_type.long()
             )
+        
+        check_nan(spatial_features, "spatial_features (RGCN output)")
             
         # 2. Temporal Attention
         # Retrieve history for current batch nodes
@@ -191,7 +198,12 @@ class EmbeddingUpdaterAttention(nn.Module):
             batch_hist_times = history_state.timestamps[batch_nodes].to(device)
             batch_mask = history_state.mask[batch_nodes].to(device)
             
-        current_timestamp = batch_data.timestamp
+        # Get current timestamp (handle both singular 'timestamp' and plural 'timestamps')
+        if hasattr(batch_data, 'timestamp'):
+            current_timestamp = batch_data.timestamp
+        else:
+            # Fallback for cumulative graph: use max timestamp
+            current_timestamp = batch_data.timestamps.max()
         
         # Apply Attention Mechanism
         # This fuses Spatial Features (Q) with History (K,V)
@@ -202,6 +214,8 @@ class EmbeddingUpdaterAttention(nn.Module):
             current_time=current_timestamp,
             mask=batch_mask
         )
+        
+        check_nan(new_node_states, "new_node_states (Attention output)")
         
         # 3. Update Global State (CPU)
         # Update latest structural state
@@ -296,10 +310,13 @@ class KGTemporalAttention(nn.Module):
             temporal_hid_dim=args.temporal_dynamic_entity_embed_dim,
             num_rels=num_relations,
             rel_embed_dim=args.rel_embed_dim,
-            graph_structural_conv='KGT',
-            window_size=10, # Configurable
-            num_attn_heads=4,
-            dropout=args.dropout
+            graph_structural_conv=getattr(args, 'graph_structural_conv', 'RGCN'),  # Use RGCN to avoid TypedLinear bugs
+            window_size=getattr(args, 'window_size', 10), # Configurable
+            num_attn_heads=getattr(args, 'num_attn_heads', 4),
+            num_gconv_layers=getattr(args, 'num_gconv_layers', 2),
+            num_node_types=getattr(args, 'num_node_types', 12),
+            dropout=args.dropout,
+            graph_name=getattr(args, 'graph', 'FinDKG')
         ).to(self.device)
         
         # Decoder (EdgeModel) - Reuse from baseline logic or simplified

@@ -57,7 +57,7 @@ def get_triplets_from_batch(batch_data, num_negatives=1, num_entities=None):
         'negatives': neg_triplets
     }
 
-def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, model_type, num_entities):
+def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, model_type, num_entities, grad_clip_norm=None):
     """Unified training epoch"""
     model.train()
     total_loss = 0
@@ -189,8 +189,9 @@ def train_epoch(model, train_loader, optimizer, epoch, device, cumul_builder, mo
                 
         loss.backward()
         
-        # Gradient Clipping (Added for stability)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # Gradient Clipping (configurable for HPO)
+        if grad_clip_norm is not None and grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
         
         optimizer.step()
         
@@ -379,18 +380,40 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
     }
 
 def run_experiment(args):
+    # For Attention sweeps, cap epochs at 20 to speed up HPO
+    if args.model_type == 'Attention' and args.epochs > 20:
+        print(f"[Config] Overriding epochs for Attention from {args.epochs} to 20 for sweeps.")
+        args.epochs = 20
+
+    # Print full configuration for each run (helpful for sweeps)
+    print("=== Run Configuration ===")
+    for k, v in sorted(vars(args).items()):
+        print(f"  {k}: {v}")
+    print("=========================")
+
     # Determine model group for WandB organization
     if args.model_type in ['TransE', 'DistMult', 'ComplEx', 'TemporalTransE']:
         model_group = "Baselines"
     else:
         model_group = "Deep_Temporal"
 
+    # Construct a descriptive WandB run name so sweeps clearly show hyperparams
+    run_name = (
+        f"{args.model_type}"
+        f"-seed{args.seed}"
+        f"-lr{args.lr}"
+        f"-wd{getattr(args, 'weight_decay', 0.0)}"
+        f"-drop{getattr(args, 'dropout', 0.0)}"
+        f"-clip{getattr(args, 'grad_clip_norm', 0.0)}"
+        f"-ws{getattr(args, 'window_size', 'NA')}"
+    )
+
     wandb.init(
         project="findkg-fix-rnn",
-        name=f"{args.model_type}-seed{args.seed}",
+        name=run_name,
         group=model_group,  # Group runs by model type
         tags=[model_group, args.model_type],
-        config=args
+        config=vars(args)
     )
     
     torch.manual_seed(args.seed)
@@ -421,6 +444,9 @@ def run_experiment(args):
     if args.model_type == 'RNN':
         config = BaselineConfig()
         config.static_entity_embed_dim = args.embed_dim
+        # Pass dropout / other HPO-related settings to RNN config when available
+        if hasattr(config, "dropout") and hasattr(args, "dropout"):
+            config.dropout = args.dropout
         model = KGTransformerPyG(num_entities, num_relations, config).to(device)
         
     elif args.model_type == 'Attention':
@@ -430,14 +456,16 @@ def run_experiment(args):
                 self.graph = "FinDKG"
                 self.device = device
                 self.num_node_types = 12  # FinDKG has 12 entity types
-                self.num_attn_heads = 4  # Must divide embed_dim evenly
-                self.num_gconv_layers = 2
+                # HPO-exposed architectural knobs
+                self.num_attn_heads = args.num_heads  # Must divide embed_dim evenly
+                self.num_gconv_layers = args.num_gconv_layers
                 self.graph_structural_conv = 'RGCN'  # ← Use RGCN instead of KGT (avoids TypedLinear)
                 self.static_entity_embed_dim = args.embed_dim
                 self.structural_dynamic_entity_embed_dim = args.embed_dim
                 self.temporal_dynamic_entity_embed_dim = args.embed_dim
                 self.rel_embed_dim = args.embed_dim
-                self.dropout = 0.1
+                # Shared dropout used in both structural GNN and temporal attention
+                self.dropout = args.dropout
                 self.window_size = args.window_size
         model = KGTemporalAttention(num_entities, num_relations, AttnConfig()).to(device)
         
@@ -478,7 +506,11 @@ def run_experiment(args):
         model = TemporalTransE(num_entities, num_relations, num_timestamps=len(unique_ts), embedding_dim=args.embed_dim).to(device)
         model.ts_map = ts_map # Attach map to model
     
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=getattr(args, "weight_decay", 0.0),
+    )
     
     # Cumulative Builders (Only for RNN/Attn)
     train_builder = CumulativeGraphBuilder(num_entities, num_relations, train_dataset.entity_types)
@@ -498,7 +530,17 @@ def run_experiment(args):
             # We'll do it in get_triplets_from_batch if we had passed the map
             pass
             
-        train_loss = train_epoch(model, train_loader, optimizer, epoch, device, train_builder, args.model_type, num_entities)
+        train_loss = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            epoch,
+            device,
+            train_builder,
+            args.model_type,
+            num_entities,
+            grad_clip_norm=getattr(args, "grad_clip_norm", None),
+        )
         wandb.log({"Train/Loss": train_loss, "epoch": epoch})
         
         val_metrics = evaluate(model, val_loader, device, val_builder, num_entities, args.model_type, "Val")
@@ -525,12 +567,21 @@ if __name__ == "__main__":
                         choices=['RNN', 'Attention', 'TransE', 'DistMult', 'ComplEx', 'TemporalTransE'])
     parser.add_argument('--data_root', type=str, default='data/FinDKG')
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--lr', type=float, default=0.0005)
+    # Best Attention training config: lr=2e-4, wd=1e-4, clip=2.0, dropout=0.1
+    parser.add_argument('--lr', type=float, default=0.0002)
     parser.add_argument('--seed', type=int, default=41)
-    parser.add_argument('--embed_dim', type=int, default=200)
+    # Best Attention architecture from Stage B sweep uses 256-dim embeddings
+    parser.add_argument('--embed_dim', type=int, default=256)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--window_size', type=int, default=10, help='History window for Attention model')
     parser.add_argument('--save_dir', type=str, default='checkpoints', help='Directory to save models')
+    # Hyperparameters for HPO (mainly used by Attention / RNN)
+    parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate for GNN/temporal attention')
+    parser.add_argument('--weight_decay', type=float, default=0.0001, help='Weight decay for AdamW')
+    parser.add_argument('--grad_clip_norm', type=float, default=2.0, help='Max grad norm (set <=0 to disable clipping)')
+    # Best Attention architecture: 8 heads, 2 GNN layers
+    parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads for temporal model')
+    parser.add_argument('--num_gconv_layers', type=int, default=2, help='Number of structural GNN layers')
     
     args = parser.parse_args()
     run_experiment(args)

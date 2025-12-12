@@ -5,7 +5,7 @@ subtitle: From Static Embeddings to Heterogeneous Multi‑Aspect Temporal Reason
 
 ### Background
 
-Many real‑world systems can be modeled as **heterogeneous temporal knowledge graphs**, where time‑stamped triplets `(head, relation, tail, time)` describe evolving interactions between diverse entities.  
+Many real‑world systems can be modeled as **heterogeneous temporal knowledge graphs**, where time‑stamped triplets *(head, relation, tail, time)* describe evolving interactions between diverse entities.  
 Classical static knowledge graph embedding models and simple temporal extensions often assume that a single embedding per entity–relation pair is sufficient, ignoring how the *trajectory* of events and their ordering shape future predictions.  
 Recent work on temporal KGs and dynamic graphs—such as **Know‑Evolve** (Trivedi et al., 2017), **DyRep** (Trivedi et al., 2019), **RE‑NET** (Jin et al., 2020), **TGAT** (Xu et al., 2020), and **TGN** (Rossi et al., 2020)—demonstrates that explicitly modeling time greatly improves performance, but also introduces new architectural and optimization challenges.  
 Our goal in this project is to understand how two deep temporal models—a recurrent KGTransformer and a temporal attention model—behave on a challenging financial temporal KG, and what it takes to make the attention‑based model competitive and stable.
@@ -51,7 +51,7 @@ We follow the original paper’s temporal split: training edges come from the fi
 
 ![Schematic overview of the FinDKG dataset: heterogeneous node and relation types evolving over time.](dataset.png)
 
-The core prediction task in this report is **temporal link prediction**: given a query `(h, r, ?, τ)` and the entire graph history up to time `τ`, predict the most likely tail entity `t`.  
+The core prediction task in this report is **temporal link prediction**: given a query *(h, r, ?, τ)* and the entire graph history up to time *τ*, predict the most likely tail entity *t*.  
 We evaluate models using ranking metrics common in the temporal KG literature: mean reciprocal rank (MRR) and Hits@10 over all candidate tails.
 
 ### Our Approach
@@ -59,56 +59,67 @@ We evaluate models using ranking metrics common in the temporal KG literature: m
 In this section we describe the **models and learning objective**.  
 We focus on two temporal KG models that share the same high‑level structure:
 
-- A **structural component** that uses a relational GNN on the cumulative graph to compute a current embedding `z_v^τ` for each entity `v` at time `τ`.  
-- A **temporal component** that turns the sequence of structural states over time into a temporal state `h_v^τ`.  
-- A **decoder** that scores candidate tails for each query `(h, r, ?, τ)` using both static and temporal information, trained with a cross‑entropy loss over all entities.
+- A **structural component** that uses a relational GNN on the cumulative graph to compute a current embedding **zᵥ(τ)** for each entity *v* at time *τ*.  
+- A **temporal component** that turns the sequence of structural states over time into a temporal state **hᵥ(τ)**.  
+- A **decoder** that scores candidate tails for each query *(h, r, ?, τ)* using both static and temporal information, trained with a cross‑entropy loss over all entities.
 
 #### Recurrent temporal model (KGTransformer + RNN)
 
 The recurrent baseline maintains a per‑entity hidden state that is updated one time step at a time.
 
-- **Structural update.** At each time bucket `τ` we build a cumulative graph `G_≤τ` and run a relational GNN (RGCN / KGTransformer) to obtain structural embeddings  
-  `z_v^τ = GNN_θ(v, G_≤τ, {x_u})`.  
+- **Structural update.** At each time bucket *τ* we build a cumulative graph *G≤τ* and run a relational GNN (RGCN / KGTransformer) to obtain structural embeddings:
+
+> **zᵥ(τ) = GNN(v, G≤τ, {xᵤ})**
+
   This captures the evolving neighborhood structure around each node.
 
-- **Temporal update (RNN).** For every entity `v`, we feed the structural sequence into a GRU:  
-  `h_v^τ = GRU_φ(z_v^τ, h_v^{τ-1})`, with `h_v^0 = 0`.  
-  Intuitively, `h_v^τ` summarizes *how* the neighborhood of `v` has changed over time up to `τ`.
+- **Temporal update (RNN).** For every entity *v*, we feed the structural sequence into a GRU:
 
-- **Decoder and loss.** For an edge `(h, r, t, τ)` in the current batch we build a head representation  
-  `u_h^τ = [x_h || h_h^τ]` and combine it with a relation embedding `r^τ`.  
-  A decoder `f_ψ` maps `(u_h^τ, r^τ)` to scores over all candidate tails `s^τ ∈ R^{|E|}`, and we train with a cross‑entropy loss  
-  `L_RNN^τ = - log( exp(s_t^τ) / sum_{t'} exp(s_{t'}^τ) )`.  
-  We use a **two‑stage** scheme: first update `h_v^τ` using the cumulative graph, then compute the decoder loss only on edges in the current batch.
+> **hᵥ(τ) = GRU(zᵥ(τ), hᵥ(τ−1))**, with **hᵥ(0) = 0**
+
+  Intuitively, *hᵥ(τ)* summarizes *how* the neighborhood of *v* has changed over time up to *τ*.
+
+- **Decoder and loss.** For an edge *(h, r, t, τ)* in the current batch we build a head representation **uₕ(τ) = [xₕ ‖ hₕ(τ)]** and combine it with a relation embedding. A decoder maps this to scores over all candidate tails **s(τ) ∈ ℝ|E|**, and we train with a cross‑entropy loss:
+
+> **L_RNN(τ) = −log( exp(sₜ) / Σₜ' exp(sₜ') )**
+
+  We use a **two‑stage** scheme: first update *hᵥ(τ)* using the cumulative graph, then compute the decoder loss only on edges in the current batch.
 
 #### Temporal attention model (KGTransformer + Transformer‑style updater)
 
 The temporal attention model keeps the same structural GNN and decoder but replaces the GRU with a Transformer‑style attention layer that can look back over a window of past structural states.
 
-- **History buffer.** For each entity `v` at time `τ` we maintain a sliding window  
-  `H_v^τ = [ z_v^{τ-K}, …, z_v^{τ-1} ] ∈ R^{K × d}` together with time indices `τ_v^τ = [τ-K, …, τ-1]`, where `K` is the window size.
+- **History buffer.** For each entity *v* at time *τ* we maintain a sliding window of the *K* most recent structural states:
 
-- **Single‑head attention.** Given parameters `W_Q, W_K, W_V ∈ R^{d × d_h}`, we compute  
-  `q_v^τ = W_Q z_v^τ` (query for the current state),  
-  `K_v^τ = H_v^τ W_K` (keys) and  
-  `V_v^τ = H_v^τ W_V` (values).  
-  We add temporal encodings `φ(Δτ)` of time gaps `Δτ = τ - τ_v^τ` to the keys and compute attention weights  
-  `α_v^τ = softmax( q_v^τ (K_v^τ + φ(Δτ))^T / sqrt(d_h) + mask )`,  
-  where `mask` turns off empty history slots.  
-  The new temporal state is then a weighted sum of values:  
-  `h_v^τ = α_v^τ V_v^τ`.  
+> **Hᵥ(τ) = [zᵥ(τ−K), …, zᵥ(τ−1)] ∈ ℝ^(K × d)**
+
+  together with their timestamps.
+
+- **Single‑head attention.** Given learned projection matrices **W_Q, W_K, W_V ∈ ℝ^(d × d_h)**, we compute:
+
+> **qᵥ(τ) = W_Q · zᵥ(τ)**  (query)  
+> **Kᵥ(τ) = Hᵥ(τ) · W_K**  (keys)  
+> **Vᵥ(τ) = Hᵥ(τ) · W_V**  (values)
+
+  We add temporal encodings **φ(Δτ)** of time gaps to the keys and compute attention weights:
+
+> **αᵥ(τ) = softmax( qᵥ(τ) · (Kᵥ(τ) + φ(Δτ))ᵀ / √d_h + mask )**
+
+  where *mask* turns off empty history slots. The new temporal state is a weighted sum of values:
+
+> **hᵥ(τ) = αᵥ(τ) · Vᵥ(τ)**
+
   Multi‑head attention repeats this in parallel for several heads and concatenates the results.
 
-- **Decoder and loss.** As in the RNN model, we form `u_h^τ = [x_h || h_h^τ]`, combine it with `r^τ`, and feed it to the same decoder `f_ψ`, training with the same cross‑entropy objective `L_Attn`.  
-  We again use the two‑stage scheme (cumulative update + batch‑level prediction), now with attention in place of the GRU.
+- **Decoder and loss.** As in the RNN model, we form **uₕ(τ) = [xₕ ‖ hₕ(τ)]**, combine it with the relation embedding, and feed it to the same decoder, training with cross‑entropy. We again use the two‑stage scheme, now with attention in place of the GRU.
 
-In both models, gradients flow from the decoder back into the temporal states (`h_v^τ`), the structural embeddings (`z_v^τ`) and finally into the GNN and temporal parameters, so the learning objective encourages the entire pipeline to produce temporal states that make future links easy to predict.
+In both models, gradients flow from the decoder back into the temporal states *hᵥ(τ)*, the structural embeddings *zᵥ(τ)*, and finally into the GNN and temporal parameters, so the learning objective encourages the entire pipeline to produce temporal states that make future links easy to predict.
 
 #### Optimization and evaluation
 
 Both models are trained with **AdamW** on mini‑batches of time‑ordered edges.  
 For temporal models we use the **two‑stage** scheme (cumulative update + batch‑level prediction) to balance temporal context and memory use, and apply gradient clipping by global norm to avoid exploding gradients.  
-We evaluate using ranking metrics common in temporal KGs—mean reciprocal rank (MRR) and Hits@10—by scoring all candidate tails for each `(h, r, ?, τ)` query on the validation and test sets.
+We evaluate using ranking metrics common in temporal KGs—mean reciprocal rank (MRR) and Hits@10—by scoring all candidate tails for each *(h, r, ?, τ)* query on the validation and test sets.
 
 ### Hyperparameter Search for Temporal Attention
 
@@ -127,7 +138,7 @@ In this section we summarize how the **recurrent KGTransformer** and **temporal 
 
 #### Overall performance: RNN vs temporal attention
 
-The recurrent baseline provides a strong starting point: by maintaining a per‑entity hidden state `h_v^τ` and updating it as new edges arrive, it can exploit temporal patterns such as “entity A becomes increasingly central in a subgraph before forming a new type of edge.”  
+The recurrent baseline provides a strong starting point: by maintaining a per‑entity hidden state *hᵥ(τ)* and updating it as new edges arrive, it can exploit temporal patterns such as "entity A becomes increasingly central in a subgraph before forming a new type of edge."  
 Its training curves are smooth and well‑behaved once the two‑stage training scheme is in place.
 
 The temporal attention model initially underperforms when configured naively (e.g., with an over‑large learning rate or insufficient capacity), but after the staged optimization in Section 2.4 it becomes competitive and ultimately surpasses the RNN on validation MRR and Hits@10.  
@@ -155,4 +166,20 @@ The experimental results on FinDKG support this claim.
 After tuning, the temporal attention model (256‑dim, 8 heads, 2 GNN layers, window 10) **converges faster and achieves notably higher validation MRR and Hits@10** than the recurrent baseline, demonstrating that the extra flexibility of attention translates into stronger predictive accuracy on this heterogeneous financial KG.
 
 In short: temporal attention is harder to train than an RNN, but when properly configured it delivers meaningfully better link‑prediction performance—validating our assumption that attention over history is a more powerful inductive bias for complex temporal graphs.
+
+**Code:** [github.com/chenxifeng0823/financial-dynamic-knowledge-graph](https://github.com/chenxifeng0823/financial-dynamic-knowledge-graph)
+
+### References
+
+1. **Du, X. et al. (2024).** *FinDKG: Dynamic Knowledge Graphs with Large Language Models for Detecting Global Trends in Financial Markets.* arXiv preprint.
+
+2. **Trivedi, R. et al. (2017).** *Know-Evolve: Deep Temporal Reasoning for Dynamic Knowledge Graphs.* ICML 2017.
+
+3. **Trivedi, R. et al. (2019).** *DyRep: Learning Representations over Dynamic Graphs.* ICLR 2019.
+
+4. **Xu, D. et al. (2020).** *Inductive Representation Learning on Temporal Graphs (TGAT).* ICLR 2020.
+
+5. **Rossi, E. et al. (2020).** *Temporal Graph Networks for Deep Learning on Dynamic Graphs (TGN).* ICML 2020 Workshop on GRL+.
+
+6. **Vaswani, A. et al. (2017).** *Attention Is All You Need.* NeurIPS 2017.
 

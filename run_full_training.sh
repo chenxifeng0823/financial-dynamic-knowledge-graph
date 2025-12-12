@@ -71,7 +71,7 @@ DEEP_EPOCHS=50
 DEEP_LR=0.0005
 DEEP_EMBED_DIM=128
 
-SEED=33
+SEED=100
 
 ################################################################################
 # SIMPLE MODELS (TransE, DistMult, ComplEx, TemporalTransE)

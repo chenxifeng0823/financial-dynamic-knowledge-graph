@@ -109,7 +109,7 @@ parameters:
     values: [1, 2, 3]
 
   seed:
-    values: [41, 42, 43]
+    values: [100]
 EOF
 else
   echo "[ArchSweep] Using existing architecture sweep config at $SWEEP_CONFIG"

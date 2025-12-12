@@ -380,10 +380,10 @@ def evaluate(model, loader, device, cumul_builder, num_entities, model_type, pha
     }
 
 def run_experiment(args):
-    # For Attention sweeps, cap epochs at 20 to speed up HPO
-    if args.model_type == 'Attention' and args.epochs > 20:
-        print(f"[Config] Overriding epochs for Attention from {args.epochs} to 20 for sweeps.")
-        args.epochs = 20
+    # For official runs we standardize Attention to at most 30 epochs
+    if args.model_type == 'Attention' and args.epochs > 30:
+        print(f"[Config] Overriding epochs for Attention from {args.epochs} to 30.")
+        args.epochs = 30
 
     # Print full configuration for each run (helpful for sweeps)
     print("=== Run Configuration ===")
@@ -397,22 +397,26 @@ def run_experiment(args):
     else:
         model_group = "Deep_Temporal"
 
-    # Construct a descriptive WandB run name so sweeps clearly show hyperparams
-    run_name = (
-        f"{args.model_type}"
-        f"-seed{args.seed}"
-        f"-lr{args.lr}"
-        f"-wd{getattr(args, 'weight_decay', 0.0)}"
-        f"-drop{getattr(args, 'dropout', 0.0)}"
-        f"-clip{getattr(args, 'grad_clip_norm', 0.0)}"
-        f"-ws{getattr(args, 'window_size', 'NA')}"
-    )
+    # Construct a descriptive WandB run name; for submission runs keep it simple
+    if getattr(args, "submission_run", False):
+        # Standardized submission naming
+        run_name = f"submission-seed-100-{args.model_type}"
+    else:
+        run_name = (
+            f"{args.model_type}"
+            f"-seed{args.seed}"
+            f"-lr{args.lr}"
+            f"-wd{getattr(args, 'weight_decay', 0.0)}"
+            f"-drop{getattr(args, 'dropout', 0.0)}"
+            f"-clip{getattr(args, 'grad_clip_norm', 0.0)}"
+            f"-ws{getattr(args, 'window_size', 'NA')}"
+        )
 
     wandb.init(
         project="findkg-fix-rnn",
         name=run_name,
         group=model_group,  # Group runs by model type
-        tags=[model_group, args.model_type],
+        tags=[model_group, args.model_type] + (["submission_run"] if getattr(args, "submission_run", False) else []),
         config=vars(args)
     )
     
@@ -569,7 +573,7 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=50)
     # Best Attention training config: lr=2e-4, wd=1e-4, clip=2.0, dropout=0.1
     parser.add_argument('--lr', type=float, default=0.0002)
-    parser.add_argument('--seed', type=int, default=41)
+    parser.add_argument('--seed', type=int, default=100)
     # Best Attention architecture from Stage B sweep uses 256-dim embeddings
     parser.add_argument('--embed_dim', type=int, default=256)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -582,6 +586,8 @@ if __name__ == "__main__":
     # Best Attention architecture: 8 heads, 2 GNN layers
     parser.add_argument('--num_heads', type=int, default=8, help='Number of attention heads for temporal model')
     parser.add_argument('--num_gconv_layers', type=int, default=2, help='Number of structural GNN layers')
+    # Flag for official submission runs (used to simplify WandB naming)
+    parser.add_argument('--submission_run', action='store_true', help='Mark this run as the official submission run')
     
     args = parser.parse_args()
     run_experiment(args)
